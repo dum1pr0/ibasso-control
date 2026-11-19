@@ -92,6 +92,17 @@ cargo run --example make_icon
 
 Mỗi thiết bị phát hiện được có nút **Cài quyền udev**. Nút này tạo một file riêng `/etc/udev/rules.d/70-ibasso-control-VID-PID.rules`, hỏi quyền qua `pkexec` (hoặc `sudo -A` nếu máy không có `pkexec`), rồi nạp lại udev. Sau đó hãy rút và cắm lại thiết bị.
 
+## Chạy ngầm và khởi động cùng máy
+
+- Khi mở, app đặt một icon ở khay hệ thống (system tray). Nút **X** chỉ ẩn cửa sổ, app vẫn chạy và giữ kết nối với DAC.
+- Mở lại cửa sổ bằng cách bấm vào icon (hoặc chọn **Mở iBasso Control** trong menu), hoặc mở lại app như bình thường. App chỉ chạy một bản: lần mở thứ hai sẽ gọi cửa sổ của bản đang chạy lên.
+- Thoát hẳn bằng **Thoát** trong menu của icon khay, hoặc **Thoát** trong menu chuột phải của nút app trên taskbar Windows (hoặc kết thúc tiến trình trong Task Manager).
+- Công tắc **Chạy khi khởi động máy** nằm trong trang **Cài đặt** (nút ở góc dưới bên trái), cùng với chế độ màu. Khi bật, app tự mở khi đăng nhập, ẩn dưới khay:
+  - Windows: thêm mục `iBasso Control` vào `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (thấy ở tab Startup của Task Manager).
+  - Linux: tạo file `~/.config/autostart/ibasso-control.desktop` theo chuẩn XDG.
+  - Cả hai chỉ áp dụng cho tài khoản hiện tại, không cần quyền admin hay sudo. Tắt công tắc sẽ xóa mục đó.
+- Trên Linux, icon dùng chuẩn StatusNotifierItem: KDE, XFCE, Cinnamon có sẵn. GNOME cần extension "AppIndicator and KStatusNotifierItem Support". Nếu không thấy icon, mở lại app để gọi cửa sổ lên. Trên Wayland, app chạy qua XWayland để có thể ẩn và hiện lại cửa sổ.
+
 ## Ghi chú khi dùng
 
 - Với máy đọc được trạng thái (DC04 Ultra, DC06, DC07 Pro, DC-Elite...), kết nối chỉ đọc, không đổi cài đặt. Trong lúc đọc app hiện thanh tiến độ và khóa các nút chỉnh.

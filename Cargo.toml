@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2021"
 description = "Desktop control for iBasso USB DAC/amps on Windows and Linux"
 license = "MIT"
+repository = "https://github.com/dum1pr0/ibasso-control"
 
 [lib]
 name = "ibasso_control"
@@ -16,12 +17,20 @@ path = "src/main.rs"
 [dependencies]
 eframe = "0.31"
 hidapi = "2.6"
+tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
 
 [build-dependencies]
 winresource = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tempfile = "3"
+# Only to choose the X11 backend: Wayland does not let an app hide its window and show it again.
+winit = { version = "0.30", default-features = false, features = ["x11"] }
+
+[target."cfg(windows)".dependencies]
+raw-window-handle = "0.6"
+windows = { version = "0.62.2", features = ["Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Foundation", "Win32_Storage_EnhancedStorage"] }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Registry", "Win32_System_Threading"] }
 
 [profile.release]
 opt-level = 3

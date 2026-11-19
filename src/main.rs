@@ -5,6 +5,10 @@ use ibasso_control::hid::{self, Command, Handle, Snapshot, UsbEntry};
 use ibasso_control::ibasso::{Control, Ctl, Family, PeqBand, MODELS};
 use ibasso_control::settings::Settings;
 use ibasso_control::{icon, udev};
+use ibasso_control::tray::{self, Signal};
+use ibasso_control::{autostart, instance};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const FILTER_TYPES: [&str; 8] =
@@ -108,21 +112,127 @@ struct App {
     connection: Option<Connection>,
     message: Option<String>,
     saved: Settings,
+    /// False when the desktop has no system tray; closing the window then quits.
+    tray: bool,
+    autostart: bool,
+    /// The settings page replaces the device controls in the main area while open.
+    settings_open: bool,
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        load_system_font(&cc.egui_ctx);
-        apply_theme(&cc.egui_ctx);
-        cc.egui_ctx.set_theme(theme_from_name(&ibasso_control::settings::load_theme().unwrap_or_default()));
+    fn new(tray: bool) -> Self {
         let (api, message) = match HidApi::new() {
             Ok(api) => (Some(api), None),
             Err(e) => (None, Some(format!("Không khởi tạo được USB HID: {e}"))),
         };
-        let mut app =
-            App { api, usb: Vec::new(), last_scan: Instant::now(), connection: None, message, saved: Settings::load() };
+        let autostart = autostart::is_enabled();
+        if autostart {
+            // Keeps the login entry pointing at this copy of the app if it was moved.
+            let _ = autostart::set(true);
+        }
+        let mut app = App {
+            api,
+            usb: Vec::new(),
+            last_scan: Instant::now(),
+            connection: None,
+            message,
+            saved: Settings::load(),
+            tray,
+            autostart,
+            settings_open: false,
+        };
         app.rescan();
         app
+    }
+
+    /// Bottom of the sidebar: a gear button, on the left, that opens the settings page.
+    fn footer(&mut self, ui: &mut egui::Ui) {
+        let p = pal(ui);
+        let open = self.settings_open;
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::click());
+        let response = response.on_hover_text("Cài đặt");
+        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, open, "Cài đặt"));
+        let (color, fill, stroke) = if open {
+            (p.accent, p.accent.gamma_multiply(0.14), p.accent)
+        } else if response.hovered() {
+            (ui.visuals().strong_text_color(), ui.visuals().widgets.hovered.weak_bg_fill, p.border)
+        } else {
+            (p.muted, Color32::TRANSPARENT, p.border)
+        };
+        let painter = ui.painter();
+        painter.rect(rect, CornerRadius::same(10), fill, Stroke::new(1.0_f32, stroke), egui::StrokeKind::Inside);
+        gear(painter, rect.center(), 11.0, color);
+        if response.clicked() {
+            self.settings_open = !open;
+        }
+    }
+
+    fn settings_page(&mut self, ui: &mut egui::Ui) {
+        let p = pal(ui);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new("TÙY CHỌN").small().strong().color(p.muted));
+                ui.label(RichText::new("Cài đặt").size(28.0).strong());
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if ui.button("Đóng").clicked() {
+                    self.settings_open = false;
+                }
+            });
+        });
+        gap(ui);
+
+        card(ui, |ui| {
+            section_title(ui, "Giao diện");
+            ui.label(RichText::new("Chế độ màu").strong());
+            theme_switcher(ui);
+        });
+        gap(ui);
+
+        card(ui, |ui| {
+            section_title(ui, "Khởi động và chạy ngầm");
+            let mut enabled = self.autostart;
+            let changed = ui
+                .horizontal(|ui| {
+                    let switch = toggle_switch(ui, &mut enabled);
+                    let label = ui.add(egui::Label::new(RichText::new("Chạy khi khởi động máy").strong()).sense(egui::Sense::click()));
+                    if label.clicked() {
+                        enabled = !enabled;
+                    }
+                    switch.changed() || label.clicked()
+                })
+                .inner;
+            if changed {
+                match autostart::set(enabled) {
+                    Ok(()) => self.autostart = enabled,
+                    Err(e) => self.message = Some(e),
+                }
+            }
+            let hint = if self.tray {
+                "Khi đăng nhập, app tự chạy và chỉ hiện icon dưới khay hệ thống."
+            } else {
+                "Khi đăng nhập, app tự mở."
+            };
+            ui.label(RichText::new(hint).color(p.muted));
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(RichText::new("Khi đóng cửa sổ").strong());
+            let text = if self.tray {
+                "Nút X chỉ ẩn cửa sổ, app vẫn chạy và giữ kết nối với DAC. Bấm icon dưới khay hoặc mở lại app để hiện cửa sổ. Thoát hẳn bằng mục Thoát trong menu của icon khay hoặc của nút app trên taskbar."
+            } else {
+                "Không tìm thấy khay hệ thống, nên nút X sẽ thoát app."
+            };
+            ui.label(RichText::new(text).color(p.muted));
+        });
+        gap(ui);
+
+        card(ui, |ui| {
+            section_title(ui, "Thông tin");
+            ui.label(format!("iBasso Control {}", env!("CARGO_PKG_VERSION")));
+            ui.hyperlink_to("Mã nguồn trên GitHub", env!("CARGO_PKG_REPOSITORY"));
+            ui.label(RichText::new("Dự án không chính thức, không liên quan tới iBasso.").small().color(p.muted));
+        });
     }
 
     fn rescan(&mut self) {
@@ -268,6 +378,7 @@ impl App {
             ui.add_space(GAP / 2.0 - ui.spacing().item_spacing.y);
         }
         if let Some((entry, family)) = connect {
+            self.settings_open = false;
             self.connect(entry, family);
         }
     }
@@ -651,6 +762,37 @@ fn logo(ui: &mut egui::Ui, size: f32) {
     }
 }
 
+/// A gear drawn from strokes: a ring with eight teeth around it.
+fn gear(painter: &egui::Painter, centre: egui::Pos2, radius: f32, color: Color32) {
+    let ring = radius * 0.56;
+    painter.circle_stroke(centre, ring, Stroke::new(radius * 0.34, color));
+    for tooth in 0..8 {
+        let angle = tooth as f32 * std::f32::consts::TAU / 8.0;
+        let direction = egui::vec2(angle.cos(), angle.sin());
+        painter.line_segment([centre + direction * ring, centre + direction * radius], Stroke::new(radius * 0.4, color));
+    }
+}
+
+/// An on/off switch: a pill track that fills with the accent colour when on.
+fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let p = pal(ui);
+    let size = egui::vec2(40.0, 22.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *on, "Chạy khi khởi động máy"));
+    let t = ui.ctx().animate_bool_responsive(response.id, *on);
+    let track = if *on { p.accent } else { ui.visuals().widgets.inactive.bg_fill };
+    let painter = ui.painter();
+    painter.rect(rect, CornerRadius::same(11), track, Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
+    let x = egui::lerp((rect.left() + 11.0)..=(rect.right() - 11.0), t);
+    let knob = if *on { p.on_accent } else { p.muted };
+    painter.circle_filled(egui::pos2(x, rect.center().y), 8.0, knob);
+    response
+}
+
 /// Adds space so the distance to the next item is exactly GAP.
 fn gap(ui: &mut egui::Ui) {
     ui.add_space(GAP - ui.spacing().item_spacing.y);
@@ -736,22 +878,26 @@ fn theme_from_name(name: &str) -> egui::ThemePreference {
 }
 
 fn theme_switcher(ui: &mut egui::Ui) {
-    let p = pal(ui);
-    ui.label(RichText::new("GIAO DIỆN").small().strong().color(p.muted));
     let current = ui.ctx().options(|o| o.theme_preference);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        for (preference, label, name) in [
-            (egui::ThemePreference::Dark, "Tối", "dark"),
-            (egui::ThemePreference::Light, "Sáng", "light"),
-            (egui::ThemePreference::System, "Theo hệ thống", "system"),
-        ] {
-            if ui.selectable_label(current == preference, label).clicked() && current != preference {
-                ui.ctx().set_theme(preference);
-                ibasso_control::settings::save_theme(name);
-            }
-        }
-    });
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(10)
+        .inner_margin(Margin::same(4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (preference, label, name) in [
+                    (egui::ThemePreference::Dark, "Tối", "dark"),
+                    (egui::ThemePreference::Light, "Sáng", "light"),
+                    (egui::ThemePreference::System, "Theo hệ thống", "system"),
+                ] {
+                    if ui.selectable_label(current == preference, label).clicked() && current != preference {
+                        ui.ctx().set_theme(preference);
+                        ibasso_control::settings::save_theme(name);
+                    }
+                }
+            });
+        });
 }
 
 /// egui's bundled fonts lack some Vietnamese glyphs, so a system font is added when one exists.
@@ -771,8 +917,8 @@ fn load_system_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl App {
+    fn update(&mut self, ctx: &egui::Context) {
         self.pump();
         let p = if ctx.style().visuals.dark_mode { DARK } else { LIGHT };
         ctx.request_repaint_after(Duration::from_millis(200));
@@ -795,20 +941,120 @@ impl eframe::App for App {
             .resizable(false)
             .frame(egui::Frame::new().fill(p.panel).inner_margin(Margin::same(16)))
             .show(ctx, |ui| {
-                egui::TopBottomPanel::bottom("theme")
+                egui::TopBottomPanel::bottom("settings")
                     .frame(egui::Frame::new().inner_margin(Margin::symmetric(0, 8)))
                     .show_separator_line(false)
-                    .show_inside(ui, theme_switcher);
+                    .show_inside(ui, |ui| self.footer(ui));
                 egui::ScrollArea::vertical().show(ui, |ui| self.device_list(ui));
             });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg).inner_margin(Margin::same(20))).show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.controls(ui));
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                if self.settings_open {
+                    self.settings_page(ui);
+                } else {
+                    self.controls(ui);
+                }
+            });
         });
     }
 }
 
+/// Requests from the tray icon and from a second launch of the app.
+#[derive(Default)]
+struct Shared {
+    window: Mutex<Option<egui::Context>>,
+    /// The native window, used to show it again while it is hidden (Windows stops running the UI then).
+    #[cfg(windows)]
+    hwnd: std::sync::atomic::AtomicIsize,
+    show: AtomicBool,
+}
+
+impl Shared {
+    fn deliver(&self, signal: Signal) {
+        match signal {
+            Signal::Show => {
+                self.show.store(true, Ordering::SeqCst);
+                #[cfg(windows)]
+                native_show(self.hwnd.load(Ordering::SeqCst));
+                if let Some(ctx) = self.window.lock().unwrap().as_ref() {
+                    ctx.request_repaint();
+                }
+            }
+            // The tray icon is already gone and settings are saved as they change, so nothing is left to do.
+            Signal::Quit => std::process::exit(0),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn native_show(hwnd: isize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW};
+    if hwnd == 0 {
+        return;
+    }
+    let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
+    unsafe {
+        ShowWindow(hwnd, SW_SHOW);
+        ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd);
+    }
+}
+
+/// Runs the app in its window. Closing the window with X hides it while a tray icon is available, so the
+/// connection to the DAC stays open; only Thoát in the tray menu ends the app.
+struct Window {
+    app: App,
+    shared: Arc<Shared>,
+}
+
+impl eframe::App for Window {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.app.tray {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        if self.shared.show.swap(false, Ordering::SeqCst) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        self.app.update(ctx);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.app.disconnect();
+    }
+}
+
 fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions {
+    let background = std::env::args().any(|arg| arg == autostart::BACKGROUND_FLAG);
+    if std::env::args().any(|arg| arg == instance::QUIT_FLAG) {
+        // Started from the taskbar's Thoát task: ask the running copy to quit, never start a new one.
+        instance::send(Signal::Quit);
+        return Ok(());
+    }
+    #[cfg(windows)]
+    ibasso_control::taskbar::set_process_identity();
+    let shared = Arc::new(Shared::default());
+
+    let on_launch = shared.clone();
+    let on_request = move |signal| match signal {
+        Signal::Show => on_launch.deliver(Signal::Show),
+        // Goes through the tray so its icon is removed before the process ends.
+        Signal::Quit => {
+            if !tray::quit() {
+                std::process::exit(0);
+            }
+        }
+    };
+    if !instance::claim(on_request) {
+        // Another copy is running; it has been asked to show its window.
+        return Ok(());
+    }
+    let on_tray = shared.clone();
+    let tray = tray::spawn(move |signal| on_tray.deliver(signal));
+
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1040.0, 760.0])
             .with_min_inner_size([760.0, 520.0])
@@ -816,5 +1062,42 @@ fn main() -> eframe::Result<()> {
             .with_icon(egui::IconData { rgba: icon::rgba(256), width: 256, height: 256 }),
         ..Default::default()
     };
-    eframe::run_native("iBasso Control", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        // Wayland ignores requests to hide a window, so use X11 (XWayland on Wayland desktops) when it exists.
+        options.event_loop_builder = Some(Box::new(|builder| {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            builder.with_x11();
+        }));
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = &mut options;
+
+    // Started at login: stay in the tray. Without a tray the window must show, or there is no way back.
+    let hidden = background && tray;
+    eframe::run_native(
+        "iBasso Control",
+        options,
+        Box::new(move |cc| {
+            load_system_font(&cc.egui_ctx);
+            apply_theme(&cc.egui_ctx);
+            cc.egui_ctx.set_theme(theme_from_name(&ibasso_control::settings::load_theme().unwrap_or_default()));
+            #[cfg(windows)]
+            {
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                if let Ok(handle) = cc.window_handle() {
+                    if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+                        shared.hwnd.store(win32.hwnd.get(), Ordering::SeqCst);
+                        let _ = ibasso_control::taskbar::set_window_identity(win32.hwnd.get());
+                        let _ = ibasso_control::taskbar::install_jump_list();
+                    }
+                }
+            }
+            *shared.window.lock().unwrap() = Some(cc.egui_ctx.clone());
+            if hidden {
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+            Ok(Box::new(Window { app: App::new(tray), shared }))
+        }),
+    )
 }
