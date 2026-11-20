@@ -137,8 +137,8 @@ cargo run --example hid_peq_write -- 3 eq.txt
 GitHub Actions (`.github/workflows/build.yml`) chạy test và build cho Windows và Linux ở mỗi lần push. Khi đẩy một tag bắt đầu bằng `v`, nó tạo Release kèm file chạy:
 
 ```powershell
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 ## Giấy phép
