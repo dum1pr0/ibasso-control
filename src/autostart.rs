@@ -29,6 +29,9 @@ pub fn is_enabled() -> bool {
     platform::is_enabled()
 }
 
+#[cfg(not(windows))]
+pub use platform::quote_exec;
+
 #[cfg(windows)]
 mod platform {
     use super::{BACKGROUND_FLAG, NAME};

@@ -24,6 +24,7 @@ pub fn send(signal: Signal) -> bool {
     let message = match signal {
         Signal::Show => SHOW,
         Signal::Quit => QUIT,
+        Signal::Volume(_) => return false,
     };
     match TcpStream::connect_timeout(&address(), Duration::from_millis(500)) {
         Ok(mut stream) => stream.write_all(message).is_ok(),

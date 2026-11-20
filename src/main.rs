@@ -122,10 +122,12 @@ struct App {
     autostart: bool,
     /// The settings page replaces the device controls in the main area while open.
     settings_open: bool,
+    /// Lets the tray icon reach the connected device while the window is hidden.
+    shared: Arc<Shared>,
 }
 
 impl App {
-    fn new(tray: bool) -> Self {
+    fn new(tray: bool, shared: Arc<Shared>) -> Self {
         let (api, message) = match HidApi::new() {
             Ok(api) => (Some(api), None),
             Err(e) => (None, Some(format!("Không khởi tạo được USB HID: {e}"))),
@@ -145,6 +147,7 @@ impl App {
             tray,
             autostart,
             settings_open: false,
+            shared,
         };
         app.rescan();
         app
@@ -253,6 +256,7 @@ impl App {
         match hid::open(api, &entry, family) {
             Ok(handle) => {
                 self.message = None;
+                *self.shared.device.lock().unwrap() = Some(handle.tx.clone());
                 let mut state = Snapshot::default();
                 // Models that cannot report their settings get the last values back, as the iBasso app does.
                 // Volume comes first because the balance command depends on it.
@@ -283,6 +287,7 @@ impl App {
     }
 
     fn disconnect(&mut self) {
+        *self.shared.device.lock().unwrap() = None;
         if let Some(connection) = self.connection.take() {
             let _ = connection.handle.tx.send(Command::Close);
         }
@@ -301,6 +306,13 @@ impl App {
                     continue;
                 }
                 if !snapshot.closed {
+                    // Models that cannot report their settings keep a volume changed from the tray for next time.
+                    let volume = snapshot.values.get(&Ctl::Volume).copied();
+                    if !connection.family.reports_state() && volume != connection.state.values.get(&Ctl::Volume).copied() {
+                        if let Some(volume) = volume {
+                            self.saved.remember(&connection.entry.product, Ctl::Volume, volume);
+                        }
+                    }
                     if !connection.peq_dirty {
                         connection.peq_edit = snapshot.peq;
                         connection.peq_total_gain = snapshot.peq_gain[connection.peq_slot as usize] as i32;
@@ -311,6 +323,7 @@ impl App {
         }
         if lost {
             self.connection = None;
+            *self.shared.device.lock().unwrap() = None;
         }
         if self.last_scan.elapsed() > Duration::from_secs(2) {
             self.rescan();
@@ -1023,6 +1036,8 @@ struct Shared {
     #[cfg(windows)]
     hwnd: std::sync::atomic::AtomicIsize,
     show: AtomicBool,
+    /// Commands to the connected device, if any.
+    device: Mutex<Option<std::sync::mpsc::Sender<Command>>>,
 }
 
 impl Shared {
@@ -1038,6 +1053,15 @@ impl Shared {
             }
             // The tray icon is already gone and settings are saved as they change, so nothing is left to do.
             Signal::Quit => std::process::exit(0),
+            Signal::Volume(step) => {
+                if let Some(device) = self.device.lock().unwrap().as_ref() {
+                    let _ = device.send(Command::StepVolume(step));
+                }
+                // The window shows the new volume when it is open.
+                if let Some(ctx) = self.window.lock().unwrap().as_ref() {
+                    ctx.request_repaint();
+                }
+            }
         }
     }
 }
@@ -1096,6 +1120,7 @@ fn main() -> eframe::Result<()> {
     let on_launch = shared.clone();
     let on_request = move |signal| match signal {
         Signal::Show => on_launch.deliver(Signal::Show),
+        Signal::Volume(_) => {}
         // Goes through the tray so its icon is removed before the process ends.
         Signal::Quit => {
             if !tray::quit() {
@@ -1107,6 +1132,8 @@ fn main() -> eframe::Result<()> {
         // Another copy is running; it has been asked to show its window.
         return Ok(());
     }
+    #[cfg(not(windows))]
+    ibasso_control::desktop_entry::ensure();
     let on_tray = shared.clone();
     let tray = tray::spawn(move |signal| on_tray.deliver(signal));
 
@@ -1115,6 +1142,8 @@ fn main() -> eframe::Result<()> {
             .with_inner_size([1040.0, 760.0])
             .with_min_inner_size([760.0, 520.0])
             .with_title("iBasso Control")
+            // Window class on Linux; it pairs the window with the menu entry and its Thoát action.
+            .with_app_id("ibasso-control")
             .with_icon(egui::IconData { rgba: icon::rgba(256), width: 256, height: 256 }),
         ..Default::default()
     };
@@ -1153,7 +1182,7 @@ fn main() -> eframe::Result<()> {
             if hidden {
                 cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
-            Ok(Box::new(Window { app: App::new(tray), shared }))
+            Ok(Box::new(Window { app: App::new(tray, shared.clone()), shared }))
         }),
     )
 }

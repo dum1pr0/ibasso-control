@@ -65,20 +65,7 @@ cargo build --release
 
 Lần đầu, bấm **Cài quyền udev** cạnh thiết bị (xem mục dưới), rồi rút và cắm lại DAC.
 
-Để app hiện trong menu ứng dụng với icon riêng (tùy chọn):
-
-```bash
-install -Dm755 target/release/ibasso-control ~/.local/bin/ibasso-control
-install -Dm644 assets/icon.png ~/.local/share/icons/hicolor/256x256/apps/ibasso-control.png
-cat > ~/.local/share/applications/ibasso-control.desktop <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=iBasso Control
-Exec=ibasso-control
-Icon=ibasso-control
-Categories=AudioVideo;Audio;
-EOF
-```
+Khi chạy, app tự tạo mục trong menu ứng dụng (`~/.local/share/applications/ibasso-control.desktop`, kèm icon) trỏ tới file đang chạy, nên không cần tạo tay. Chuột phải nút app trên taskbar KDE hoặc GNOME có mục **Thoát**. App chỉ sửa mục này khi nó chưa có hoặc đang trỏ tới chính file đang chạy, và bỏ qua khi chạy từ thư mục `target` của cargo.
 
 ### Icon
 
@@ -95,8 +82,9 @@ Mỗi thiết bị phát hiện được có nút **Cài quyền udev**. Nút n�
 ## Chạy ngầm và khởi động cùng máy
 
 - Khi mở, app đặt một icon ở khay hệ thống (system tray). Nút **X** chỉ ẩn cửa sổ, app vẫn chạy và giữ kết nối với DAC.
+- Lăn chuột trên icon khay để chỉnh âm lượng của DAC đang kết nối (mỗi nấc 2 bước), kể cả khi cửa sổ đang ẩn.
 - Mở lại cửa sổ bằng cách bấm vào icon (hoặc chọn **Mở iBasso Control** trong menu), hoặc mở lại app như bình thường. App chỉ chạy một bản: lần mở thứ hai sẽ gọi cửa sổ của bản đang chạy lên.
-- Thoát hẳn bằng **Thoát** trong menu của icon khay, hoặc **Thoát** trong menu chuột phải của nút app trên taskbar Windows (hoặc kết thúc tiến trình trong Task Manager).
+- Thoát hẳn bằng **Thoát** trong menu của icon khay, hoặc **Thoát** trong menu chuột phải của nút app trên taskbar (Windows, KDE, GNOME) (hoặc kết thúc tiến trình trong Task Manager).
 - Công tắc **Chạy khi khởi động máy** nằm trong trang **Cài đặt** (nút ở góc dưới bên trái), cùng với chế độ màu. Khi bật, app tự mở khi đăng nhập, ẩn dưới khay:
   - Windows: thêm mục `iBasso Control` vào `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (thấy ở tab Startup của Task Manager).
   - Linux: tạo file `~/.config/autostart/ibasso-control.desktop` theo chuẩn XDG.

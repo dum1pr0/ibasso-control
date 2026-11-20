@@ -36,6 +36,8 @@ pub fn scan(api: &mut HidApi) -> Vec<UsbEntry> {
 
 pub enum Command {
     Set(Ctl, i32),
+    /// Raises or lowers the volume from its current value, as the tray icon's mouse wheel does.
+    StepVolume(i32),
     WritePeq { slot: u8, bands: Box<[PeqBand; 10]>, total_gain: i8 },
     Close,
 }
@@ -222,7 +224,15 @@ fn worker(device: HidDevice, family: Family, commands: Receiver<Command>, snapsh
     let mut publish_initial_state = true;
     loop {
         let mut changed = std::mem::take(&mut publish_initial_state) || error.is_some();
-        while let Ok(command) = commands.try_recv() {
+        // A turn of the wheel sends many steps at once; they are combined into one volume change.
+        let mut queue: Vec<Command> = Vec::new();
+        for command in commands.try_iter() {
+            match (queue.last_mut(), command) {
+                (Some(Command::StepVolume(total)), Command::StepVolume(step)) => *total += step,
+                (_, command) => queue.push(command),
+            }
+        }
+        for command in queue {
             changed = true;
             let result = match command {
                 Command::Close => {
@@ -232,6 +242,15 @@ fn worker(device: HidDevice, family: Family, commands: Receiver<Command>, snapsh
                 Command::Set(ctl, value) => session.set(ctl, value).and_then(|frames| {
                     frames.iter().try_for_each(|frame| write(&device, &mut session, frame, numbered))
                 }),
+                Command::StepVolume(step) => match session.values.get(&Ctl::Volume) {
+                    Some(&volume) => {
+                        let target = (volume + step).clamp(0, 100);
+                        session.set(Ctl::Volume, target).and_then(|frames| {
+                            frames.iter().try_for_each(|frame| write(&device, &mut session, frame, numbered))
+                        })
+                    }
+                    None => Err("Chưa biết âm lượng hiện tại, hãy chỉnh một lần trong app.".into()),
+                },
                 Command::WritePeq { slot, bands, total_gain } => {
                     write_peq(&device, &mut session, slot, &bands, total_gain, numbered)
                 }
