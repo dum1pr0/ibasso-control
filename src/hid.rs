@@ -124,6 +124,74 @@ pub fn query(device: &HidDevice, session: &mut Session, frame: &Frame, numbered:
     Ok(false)
 }
 
+/// Sends a setting write. Writes the device acknowledges are repeated until it does, because it drops some
+/// of them; without this the app shows the new value while the device keeps the old one.
+pub fn write(device: &HidDevice, session: &mut Session, frame: &Frame, numbered: bool) -> Result<(), String> {
+    if !session.confirms(frame) {
+        return send(device, frame, numbered);
+    }
+    let mut buffer = [0u8; 65];
+    for _ in 0..4 {
+        send(device, frame, numbered)?;
+        let deadline = Instant::now() + Duration::from_millis(150);
+        while Instant::now() < deadline {
+            let n = device.read_timeout(&mut buffer, 20).map_err(|e| format!("Mất kết nối: {e}"))?;
+            if n > 0 {
+                session.on_report(&buffer[..n]);
+                if session.acknowledges(frame, &buffer[..n]) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    // Show what the device really has instead of the value that was not applied.
+    if let Some(read) = session.read_back(frame) {
+        query(device, session, &read, numbered)?;
+    }
+    Err("Thiết bị không nhận lệnh sau 4 lần gửi, hãy thử lại.".into())
+}
+
+/// Writes one PEQ slot. The device does not acknowledge band writes, so the bands are read back and any that
+/// differ are written again before the slot is saved and activated.
+pub fn write_peq(
+    device: &HidDevice,
+    session: &mut Session,
+    slot: u8,
+    bands: &[PeqBand; 10],
+    total_gain: i8,
+    numbered: bool,
+) -> Result<(), String> {
+    let frames = crate::ibasso::peq_write_frames(slot, bands, total_gain);
+    let (band_frames, finish) = frames.split_at(10);
+    let reads = crate::ibasso::peq_read_frames(slot);
+    let mut pending: Vec<usize> = (0..10).collect();
+    for _ in 0..4 {
+        for &band in &pending {
+            send(device, &band_frames[band], numbered)?;
+        }
+        pending.retain(|&band| {
+            let read = query(device, session, &reads[band], numbered).unwrap_or(false);
+            let stored = &session.peq[slot as usize][band];
+            !(read && stored.stored() == bands[band].stored() && session.peq_gain[slot as usize] == total_gain)
+        });
+        if pending.is_empty() {
+            break;
+        }
+    }
+    session.peq[slot as usize] = *bands;
+    session.peq_gain[slot as usize] = total_gain;
+    if !pending.is_empty() {
+        let list: Vec<String> = pending.iter().map(|b| (b + 1).to_string()).collect();
+        return Err(format!("Thiết bị không nhận dải {} của EQ, chưa lưu. Hãy ghi lại.", list.join(", ")));
+    }
+    // Save and activate are not acknowledged either. Both are idempotent, so sending them twice makes a
+    // dropped one unlikely.
+    for frame in finish.iter().chain(finish) {
+        send(device, frame, numbered)?;
+    }
+    Ok(())
+}
+
 /// Opens the device and runs its protocol session on a dedicated thread.
 pub fn open(api: &HidApi, entry: &UsbEntry, family: Family) -> Result<Handle, String> {
     let device = api.open_path(&entry.path).map_err(|e| format!("Không mở được thiết bị: {e}"))?;
@@ -155,28 +223,21 @@ fn worker(device: HidDevice, family: Family, commands: Receiver<Command>, snapsh
     loop {
         let mut changed = std::mem::take(&mut publish_initial_state) || error.is_some();
         while let Ok(command) = commands.try_recv() {
-            let frames = match command {
+            changed = true;
+            let result = match command {
                 Command::Close => {
                     let _ = snapshots.send(Snapshot { closed: true, ..Default::default() });
                     return;
                 }
-                Command::Set(ctl, value) => session.set(ctl, value),
+                Command::Set(ctl, value) => session.set(ctl, value).and_then(|frames| {
+                    frames.iter().try_for_each(|frame| write(&device, &mut session, frame, numbered))
+                }),
                 Command::WritePeq { slot, bands, total_gain } => {
-                    session.peq[slot as usize] = *bands;
-                    session.peq_gain[slot as usize] = total_gain;
-                    Ok(crate::ibasso::peq_write_frames(slot, &bands, total_gain))
+                    write_peq(&device, &mut session, slot, &bands, total_gain, numbered)
                 }
             };
-            changed = true;
-            match frames {
-                Ok(frames) => {
-                    for frame in frames {
-                        if let Err(e) = send(&device, &frame, numbered) {
-                            error = Some(e);
-                        }
-                    }
-                }
-                Err(e) => error = Some(e),
+            if let Err(e) = result {
+                error = Some(e);
             }
         }
         match device.read_timeout(&mut buffer, 20) {

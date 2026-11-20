@@ -22,6 +22,9 @@ Các cài đặt trong cùng nhóm được ghi chung một gói, nên app chỉ
 
 - DC04 Ultra dùng report HID có đánh số: byte đầu của gói 64 byte (`0x4B`) chính là report ID, nên gửi nguyên gói, không chèn thêm byte `00`.
 - Máy có thể bỏ sót truy vấn khi nhận quá nhanh. Mỗi truy vấn lúc kết nối chờ phản hồi tới 200 ms và gửi lại một lần, như app iBasso.
+- Máy cũng bỏ qua ngẫu nhiên khoảng 1/5 lệnh ghi cài đặt, kể cả khi các lệnh cách nhau 500 ms. Lệnh được nhận thì máy trả lời
+  sau khoảng 17 ms bằng `4B 00 3F 08 00 <nhóm> <các trường mới>`; lệnh bị bỏ thì không có gì. Vì vậy app gửi lại tới 4 lần
+  cho tới khi có trả lời, nếu vẫn không có thì đọc lại nhóm đó để hiện đúng giá trị trên máy. Đã thử 40 lần đổi liên tiếp: không mất lệnh nào.
 
 ## DC03 Pro (và DC04 Pro, Macaron cùng họ)
 
@@ -37,3 +40,8 @@ mà gửi lại các giá trị đã lưu lần trước, như app iBasso. Lện
 
 Mỗi bộ có 10 dải. Đọc bằng `4B 80 09 1F <bộ+7> <dải>`. Ghi từng dải, rồi lưu (`4B 01 0A 04 <bộ+7> 00 01 01`) và kích hoạt (`4B 01 01 04 00 00 02`).
 Trong gói dải: tần số ở byte 28 đến 29, Q ×256 ở byte 30 đến 31, gain ×256 ở byte 32 đến 33 (little-endian), loại bộ lọc ở byte 34, gain tổng ở byte 35.
+
+Lệnh ghi dải không có trả lời (đã thử trên DC04 Ultra), nên app đọc lại từng dải sau khi ghi và ghi lại dải nào chưa khớp, rồi mới lưu và kích hoạt.
+Lưu và kích hoạt cũng không có trả lời, nên được gửi hai lần.
+
+App nhập được EQ dạng Equalizer APO mà squig.link và AutoEQ xuất ra (`src/peq_import.rs`). `Preamp` thành gain tổng, làm tròn xuống số dB nguyên.

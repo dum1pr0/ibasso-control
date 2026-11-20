@@ -297,6 +297,13 @@ pub struct PeqBand {
     pub q: f64,
 }
 
+impl PeqBand {
+    /// The band as the device stores it: Q and gain in 1/256 steps.
+    pub fn stored(&self) -> (u8, u16, i16, i16) {
+        (self.filter_type, self.frequency, (self.q * 256.0).round() as i16, (self.gain * 256.0).round() as i16)
+    }
+}
+
 impl Default for PeqBand {
     fn default() -> Self {
         PeqBand { filter_type: 2, frequency: 1000, gain: 0.0, q: 1.0 }
@@ -588,6 +595,33 @@ impl Session {
         }
     }
 
+    /// True for setting writes the device acknowledges. A DC04 Ultra silently drops some writes (about one in
+    /// five on firmware 1.54.30) and answers the rest within ~20 ms with `4B 00 3F 08 00 <group> <fields>`, so
+    /// these writes are repeated until that reply arrives. Only checked on the 64-byte family on real hardware.
+    pub fn confirms(&self, frame: &Frame) -> bool {
+        let q = &frame.bytes;
+        self.family.wire() == Wire::Hid64 && q.len() >= 6 && q[..4] == [75, 1, 63, 8]
+    }
+
+    /// True when `report` acknowledges the write `frame`.
+    pub fn acknowledges(&self, frame: &Frame, report: &[u8]) -> bool {
+        report.len() >= 6 && report[..4] == [75, 0, 63, 8] && report[5] == frame.bytes[5]
+    }
+
+    /// The status query that reads back the group a confirmed write changed.
+    pub fn read_back(&self, frame: &Frame) -> Option<Frame> {
+        let group = frame.bytes[5];
+        let seq = match group {
+            16 => 66,
+            G_FILTER => 89,
+            G_OUTPUT => 96,
+            G_SCREEN => 97,
+            G_USB => 99,
+            _ => return None,
+        };
+        Some(hid64_read(seq, group))
+    }
+
     /// Applies one input report and returns any follow-up frames.
     pub fn on_report(&mut self, r: &[u8]) -> Vec<Frame> {
         match self.family.wire() {
@@ -867,6 +901,22 @@ mod tests {
         assert_eq!(b[35], 0xFE);
         assert_eq!(frames[10].bytes[..8], [75, 1, 10, 4, 8, 0, 1, 1]);
         assert_eq!(frames[11].bytes[..7], [75, 1, 1, 4, 0, 0, 2]);
+    }
+
+    #[test]
+    fn dc04u_write_is_acknowledged_by_its_group_reply() {
+        let mut s = Session::new(Family::Dc04u);
+        s.on_report(&report64(G_SCREEN, [0, 5, 1, 0, 4]));
+        let frame = s.set(Ctl::ScreenTime, 2).unwrap().remove(0);
+        assert!(s.confirms(&frame));
+        // Captured from a DC04 Ultra after writing screen time 2.
+        let mut ack = vec![0u8; 64];
+        ack[..11].copy_from_slice(&[75, 0, 63, 8, 0, 64, 0, 5, 2, 0, 4]);
+        assert!(s.acknowledges(&frame, &ack));
+        ack[5] = G_OUTPUT;
+        assert!(!s.acknowledges(&frame, &ack));
+        assert_eq!(s.read_back(&frame).unwrap().bytes[..6], [75, 0x80, 63, 8, 97, G_SCREEN]);
+        assert!(!s.confirms(&peq_read_frames(0)[0]));
     }
 
     #[test]

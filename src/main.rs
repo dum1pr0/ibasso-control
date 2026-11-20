@@ -3,6 +3,7 @@ use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, Stroke};
 use hidapi::HidApi;
 use ibasso_control::hid::{self, Command, Handle, Snapshot, UsbEntry};
 use ibasso_control::ibasso::{Control, Ctl, Family, PeqBand, MODELS};
+use ibasso_control::peq_import;
 use ibasso_control::settings::Settings;
 use ibasso_control::{icon, udev};
 use ibasso_control::tray::{self, Signal};
@@ -103,6 +104,10 @@ struct Connection {
     peq_total_gain: i32,
     peq_edit: Option<[[PeqBand; 10]; 3]>,
     peq_dirty: bool,
+    /// Text pasted into the EQ import box while it is open.
+    peq_import: Option<String>,
+    /// Result of the last import, and whether it failed.
+    peq_notice: Option<(String, bool)>,
 }
 
 struct App {
@@ -266,6 +271,8 @@ impl App {
                     peq_total_gain: 0,
                     peq_edit: None,
                     peq_dirty: false,
+                    peq_import: None,
+                    peq_notice: None,
                 });
             }
             Err(e) => {
@@ -720,8 +727,57 @@ fn peq_editor(ui: &mut egui::Ui, connection: &mut Connection) {
         connection.peq_dirty = true;
     }
     ui.add_space(8.0);
+    if let Some(text) = connection.peq_import.as_mut() {
+        ui.label(
+            RichText::new("Dán EQ xuất từ squig.link (hoặc AutoEQ, Equalizer APO), dạng \"Filter 1: ON PK Fc 100 Hz Gain -3.0 dB Q 1.000\".")
+                .color(p.muted),
+        );
+        ui.add(
+            egui::TextEdit::multiline(text)
+                .code_editor()
+                .desired_rows(8)
+                .desired_width(f32::INFINITY)
+                .hint_text("Preamp: -6.0 dB\nFilter 1: ON PK Fc 26 Hz Gain 6.0 dB Q 0.500\n…"),
+        );
+        let mut close = false;
+        ui.horizontal(|ui| {
+            if accent_button(ui, &format!("Nạp vào Bộ {}", slot + 1)).clicked() {
+                match peq_import::parse(text) {
+                    Ok(imported) => {
+                        edit[slot] = imported.bands;
+                        connection.peq_total_gain = imported.total_gain as i32;
+                        connection.peq_dirty = true;
+                        let mut notice = format!("Đã nạp vào Bộ {}. Kiểm tra rồi bấm \"Ghi vào thiết bị\".", slot + 1);
+                        for note in imported.notes {
+                            notice.push_str(&format!("\n• {note}"));
+                        }
+                        connection.peq_notice = Some((notice, false));
+                        close = true;
+                    }
+                    Err(e) => connection.peq_notice = Some((e, true)),
+                }
+            }
+            if ui.button("Hủy").clicked() {
+                connection.peq_notice = None;
+                close = true;
+            }
+        });
+        if close {
+            connection.peq_import = None;
+        }
+        ui.add_space(8.0);
+    }
+    if let Some((notice, failed)) = &connection.peq_notice {
+        ui.label(RichText::new(notice).color(if *failed { p.danger } else { p.good }));
+        ui.add_space(4.0);
+    }
     ui.horizontal(|ui| {
+        if connection.peq_import.is_none() && ui.button("Nhập từ squig.link…").clicked() {
+            connection.peq_import = Some(String::new());
+            connection.peq_notice = None;
+        }
         if accent_button(ui, "Ghi vào thiết bị").clicked() {
+            connection.peq_notice = None;
             connection.peq_dirty = false;
             connection.state.peq_gain[slot] = connection.peq_total_gain as i8;
             let _ = connection.handle.tx.send(Command::WritePeq {

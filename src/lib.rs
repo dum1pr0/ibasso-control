@@ -3,6 +3,7 @@ pub mod autostart;
 pub mod hid;
 pub mod icon;
 pub mod instance;
+pub mod peq_import;
 pub mod ibasso;
 pub mod settings;
 #[cfg(windows)]

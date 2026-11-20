@@ -109,6 +109,8 @@ Mỗi thiết bị phát hiện được có nút **Cài quyền udev**. Nút n�
 - DC03 Pro, DC04 Pro và Macaron không cho đọc cài đặt hiện tại. App ghi nhớ lần chỉnh gần nhất của từng máy (trong `%APPDATA%\ibasso-control\settings.txt`, hoặc `~/.config/ibasso-control/settings.txt` trên Linux) và tự gửi lại ngay khi kết nối, giống app iBasso gốc. Âm lượng được gửi trước.
 - Với DC04 Ultra, Macchiato, D18, DC07 Pro, DC-Nunchaku và DC-Tonfa, thanh cân bằng dùng thang 0 đến 20, trong đó 10 là giữa.
 - EQ tham số (DC04 Ultra, Macchiato) chỉ ghi được sau khi đã đọc đủ cả 3 bộ từ thiết bị.
+- Nhập EQ từ squig.link: trong mục **EQ tham số**, bấm **Nhập từ squig.link…**, dán nội dung xuất ra (dạng Equalizer APO, AutoEQ cũng dùng được), bấm **Nạp vào Bộ N**, kiểm tra rồi bấm **Ghi vào thiết bị**. `Preamp` thành gain tổng, làm tròn xuống số dB nguyên; giá trị vượt giới hạn được đưa về giới hạn và có ghi chú.
+- DC04 Ultra đôi khi bỏ qua lệnh ghi. App gửi lại cho tới khi máy xác nhận, và đọc lại từng dải EQ sau khi ghi, nên giá trị trên app luôn khớp với máy.
 - App không có chức năng cập nhật firmware.
 
 ## Công cụ chẩn đoán
@@ -119,6 +121,15 @@ Các ví dụ sau chỉ đọc, không đổi cài đặt:
 cargo run --example hid_probe
 cargo run --example hid_status
 cargo run --example hid_snapshot
+```
+
+Các ví dụ sau có ghi vào DC04 Ultra:
+
+```bash
+# Đổi thời gian sáng màn hình nhiều lần để kiểm tra lệnh ghi, rồi đặt lại như cũ
+cargo run --example hid_write_probe -- 40
+# In một bộ EQ (1 đến 3); thêm đường dẫn file EQ squig.link để ghi đè bộ đó
+cargo run --example hid_peq_write -- 3 eq.txt
 ```
 
 ## Phát hành bản mới
